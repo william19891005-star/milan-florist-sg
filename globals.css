@@ -11,11 +11,26 @@ body {
   font-family: Arial, Helvetica, sans-serif;
   max-width: 1200px;
   margin: 0 auto;
-  padding: 16px;
+  padding: 24px 16px;
 }
 
-/* 限制图片最大宽度，防止破框或撑满屏幕 */
-img {
-  max-width: 100%;
-  height: auto;
+/* 强制限制所有产品图片与卡片的尺寸 */
+img, 
+picture, 
+video, 
+canvas, 
+svg {
+  display: block;
+  max-width: 360px !important;
+  width: 100% !important;
+  height: auto !important;
+  border-radius: 8px;
+  margin: 12px 0;
+}
+
+/* 优化商品容器布局 */
+main, section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
