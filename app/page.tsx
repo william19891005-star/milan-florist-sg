@@ -1,6 +1,10 @@
-import Image from "next/image";
 import { client } from "@/sanity/lib/client";
-import { urlFor } from "@/sanity/lib/image";
+import imageUrlBuilder from "@sanity/image-url";
+
+const builder = imageUrlBuilder(client);
+function urlFor(source: any) {
+  return builder.image(source);
+}
 
 export const revalidate = 10;
 
@@ -38,7 +42,7 @@ export default async function Home() {
           最新鲜花款 (Our Collections)
         </h2>
 
-        {/* 卡片网格：自动多列 */}
+        {/* 卡片网格 */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 320px))', gap: '24px', justifyContent: 'center' }}>
           {products.map((product: any) => {
             const imageUrl = product.image ? urlFor(product.image).url() : null;
@@ -56,11 +60,11 @@ export default async function Home() {
                   boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
                   display: 'flex',
                   flexDirection: 'column',
-                  justify: 'space-between'
+                  justifyContent: 'space-between'
                 }}
               >
                 <div>
-                  {/* 核心重点：用固定内联样式硬性卡死图片外框（高260px，宽100%） */}
+                  {/* 图片展示区 */}
                   <div style={{ width: '100%', height: '260px', overflow: 'hidden', position: 'relative', backgroundColor: '#F3F4F6' }}>
                     {imageUrl ? (
                       <img
