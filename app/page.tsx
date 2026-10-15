@@ -1,10 +1,5 @@
 import { client } from "@/sanity/lib/client";
-import imageUrlBuilder from "@sanity/image-url";
-
-const builder = imageUrlBuilder(client);
-function urlFor(source: any) {
-  return builder.image(source);
-}
+import { urlFor } from "@/sanity/lib/image";
 
 export const revalidate = 10;
 
