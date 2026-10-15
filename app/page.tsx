@@ -1,16 +1,16 @@
 import { client } from "@/sanity/lib/client";
-import { urlFor } from "@/sanity/lib/image";
 
 export const revalidate = 10;
 
 export default async function Home() {
+  /* 直接在 GROQ 查询语句中把图片的完整 URL 拿出来 */
   const products = await client.fetch(`
     *[_type == "product"] {
       _id,
       title,
       price,
       description,
-      image,
+      "imageUrl": image.asset->url,
       category,
       whatsappNumber
     }
@@ -40,7 +40,6 @@ export default async function Home() {
         {/* 卡片网格 */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 320px))', gap: '24px', justifyContent: 'center' }}>
           {products.map((product: any) => {
-            const imageUrl = product.image ? urlFor(product.image).url() : null;
             const waNumber = product.whatsappNumber || "60167297027";
             const waLink = `https://wa.me/${waNumber}?text=Hi,%20I%20would%20like%20to%20inquire%20about%20${encodeURIComponent(product.title)}`;
 
@@ -61,9 +60,9 @@ export default async function Home() {
                 <div>
                   {/* 图片展示区 */}
                   <div style={{ width: '100%', height: '260px', overflow: 'hidden', position: 'relative', backgroundColor: '#F3F4F6' }}>
-                    {imageUrl ? (
+                    {product.imageUrl ? (
                       <img
-                        src={imageUrl}
+                        src={product.imageUrl}
                         alt={product.title}
                         style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
                       />
