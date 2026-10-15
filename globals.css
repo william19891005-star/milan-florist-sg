@@ -14,23 +14,23 @@ body {
   padding: 24px 16px;
 }
 
-/* 强制限制所有产品图片与卡片的尺寸 */
+/* 强制限制所有图片及其外层包裹容器的宽度 */
 img, 
 picture, 
-video, 
-canvas, 
-svg {
-  display: block;
+[class*="image"],
+span > img {
   max-width: 360px !important;
+  max-height: 400px !important;
   width: 100% !important;
   height: auto !important;
-  border-radius: 8px;
-  margin: 12px 0;
+  object-fit: cover !important;
+  border-radius: 12px;
+  margin: 0 auto 16px auto !important;
 }
 
-/* 优化商品容器布局 */
-main, section {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+/* 限制 Next.js Image 组件产生的相对定位包裹块 */
+div:has(> img),
+div:has(> span > img) {
+  max-width: 360px !important;
+  margin: 0 auto !important;
 }
