@@ -1,3 +1,5 @@
+'use client';
+import { useState, useEffect } from "react";
 import { client } from "@/sanity/lib/client";
 import imageUrlBuilder from "@sanity/image-url";
 
@@ -6,78 +8,249 @@ function urlFor(source: any) {
   return builder.image(source);
 }
 
-export const revalidate = 10;
+export default function Home() {
+  const [products, setProducts] = useState<any[]>([]);
+  
+  // 购物车状态
+  const [cart, setCart] = useState<any[]>([]);
+  const [isCartOpen, setIsCartOpen] = useState(false);
 
-export default async function Home() {
-  const products = await client.fetch(`
-    *[_type == "product"] {
-      _id,
-      title,
-      price,
-      description,
-      images,
-      category,
-      whatsappNumber
+  // 会员积分查询状态
+  const [isPointsModalOpen, setIsPointsModalOpen] = useState(false);
+  const [searchPhone, setSearchPhone] = useState("");
+  const [customerData, setCustomerData] = useState<any | null>(null);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState("");
+
+  // 统一订单表单状态
+  const [senderName, setSenderName] = useState("");
+  const [recipientName, setRecipientName] = useState("");
+  const [recipientPhone, setRecipientPhone] = useState("");
+  const [address, setAddress] = useState("");
+  const [deliveryDate, setDeliveryDate] = useState("");
+  const [message, setMessage] = useState("");
+  const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
+
+  useEffect(() => {
+    client.fetch(`
+      *[_type == "product"] {
+        _id,
+        title,
+        price,
+        description,
+        images,
+        category,
+        whatsappNumber
+      }
+    `).then((data) => setProducts(data));
+  }, []);
+
+  // 加入购物车
+  const addToCart = (product: any) => {
+    setCart((prevCart) => {
+      const existingItem = prevCart.find((item) => item._id === product._id);
+      if (existingItem) {
+        return prevCart.map((item) =>
+          item._id === product._id ? { ...item, quantity: item.quantity + 1 } : item
+        );
+      }
+      return [...prevCart, { ...product, quantity: 1 }];
+    });
+    setIsCartOpen(true);
+  };
+
+  // 修改购物车数量
+  const updateQuantity = (id: string, delta: number) => {
+    setCart((prevCart) =>
+      prevCart
+        .map((item) => {
+          if (item._id === id) {
+            const newQty = item.quantity + delta;
+            return newQty > 0 ? { ...item, quantity: newQty } : null;
+          }
+          return item;
+        })
+        .filter(Boolean)
+    );
+  };
+
+  // 计算总金额
+  const totalPrice = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
+
+  // 会员积分手机号查询逻辑
+  const handleCheckPoints = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSearching(true);
+    setSearchError("");
+    setCustomerData(null);
+
+    try {
+      const cleanPhone = searchPhone.replace(/[\s-]/g, "");
+      const res = await client.fetch(
+        `*[_type == "customer" && phone match $phone][0]`,
+        { phone: `*${cleanPhone}*` }
+      );
+
+      if (res) {
+        setCustomerData(res);
+      } else {
+        searchCustomerOrCreate(cleanPhone, senderName || "尊贵顾客");
+      }
+    } catch (err) {
+      setSearchError("查询失败，请稍后再试。");
+    } finally {
+      setIsSearching(false);
     }
-  `);
+  };
+
+  // 辅助函数：查询或创建用户（针对积分查询没找到时的自动创建）
+  const searchCustomerOrCreate = async (phone: string, name: string) => {
+    try {
+      const existing = await client.fetch(
+        `*[_type == "customer" && phone match $phone][0]`,
+        { phone: `*${phone}*` }
+      );
+      if (existing) {
+        setCustomerData(existing);
+      } else {
+        setSearchError("未找到该手机号。如果您是新顾客，下单时系统将为您自动注册并赠送积分账户！");
+      }
+    } catch (e) {
+      setSearchError("查询失败。");
+    }
+  };
+
+  // 提交订单至 WhatsApp + 自动累计积分逻辑
+  const handleCheckout = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (cart.length === 0 || isSubmittingOrder) return;
+
+    setIsSubmittingOrder(true);
+    const defaultWaNumber = cart[0]?.whatsappNumber || "60167297027";
+    const earnedPoints = Math.floor(totalPrice); // 消费 SGD $1 = 1 积分
+
+    try {
+      const cleanPhone = recipientPhone.replace(/[\s-]/g, "");
+      
+      // 1. 在 Sanity 后台查找该手机号是否已存在
+      const existingCustomer = await client.fetch(
+        `*[_type == "customer" && phone match $phone][0]`,
+        { phone: `*${cleanPhone}*` }
+      );
+
+      if (existingCustomer) {
+        // 如果是老顾客：自动累加积分
+        const newTotalPoints = (existingCustomer.points || 0) + earnedPoints;
+        await client.patch(existingCustomer._id)
+          .set({ points: newTotalPoints })
+          .commit();
+      } else {
+        // 如果是新顾客：自动在 Sanity 创建会员并录入首单积分
+        await client.create({
+          _type: 'customer',
+          name: senderName || "新顾客",
+          phone: recipientPhone,
+          points: earnedPoints,
+          notes: `自动注册：首单消费 SGD $${totalPrice}`
+        });
+      }
+    } catch (error) {
+      console.error("自动更新积分出错:", error);
+      // 即使积分更新偶发异常，也不要阻断顾客发 WhatsApp 下单
+    } finally {
+      setIsSubmittingOrder(false);
+    }
+
+    // 2. 拼接 WhatsApp 订单文本
+    const itemsText = cart
+      .map((item, index) => `${index + 1}. *${item.title}* x ${item.quantity} (SGD $${item.price * item.quantity})`)
+      .join("\n");
+
+    const orderText = 
+      `🌸 *【MILAN FLORIST SG 订单提交】* 🌸\n\n` +
+      `🛒 *订购商品明细*:\n${itemsText}\n\n` +
+      `💵 *订单总额*: *SGD $${totalPrice}* (已自动累计 ${earnedPoints} 积分)\n` +
+      `---------------------------------\n` +
+      `👤 *送花人 (Sender)*: ${senderName}\n` +
+      `🧑 *收花人 (Recipient)*: ${recipientName}\n` +
+      `📞 *收花人电话*: ${recipientPhone}\n` +
+      `📍 *配送地址*: ${address}\n` +
+      `📅 *配送日期/时段*: ${deliveryDate}\n` +
+      `✍️ *贺词/挽词内容*: \n${message}\n\n` +
+      `请问订单信息已确认，谢谢！`;
+
+    const encodedText = encodeURIComponent(orderText);
+    window.open(`https://wa.me/${defaultWaNumber}?text=${encodedText}`, '_blank');
+  };
 
   return (
     <div style={{ fontFamily: 'sans-serif', backgroundColor: '#F9FAFB', minHeight: '100vh', color: '#1F2937' }}>
       
-      {/* 1. 顶部导航栏 (Navbar) */}
-      <nav style={{ backgroundColor: '#ffffff', borderBottom: '1px solid #E5E7EB', padding: '16px 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', position: 'sticky', top: 0, zIndex: 50 }}>
+      {/* 1. 顶部导航栏 */}
+      <nav style={{ backgroundColor: '#ffffff', borderBottom: '1px solid #E5E7EB', padding: '16px 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', position: 'sticky', top: 0, zIndex: 40 }}>
         <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: '#059669', letterSpacing: '0.5px' }}>
           🌹 MILAN FLORIST SG
         </div>
-        <div style={{ display: 'flex', gap: '24px', fontSize: '0.9rem', fontWeight: '500' }}>
-          <a href="#collections" style={{ color: '#4B5563', textDecoration: 'none' }}>精选花款</a>
-          <a href="#about" style={{ color: '#4B5563', textDecoration: 'none' }}>关于我们</a>
-          <a href="#contact" style={{ color: '#4B5563', textDecoration: 'none' }}>联系客服</a>
+
+        <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+          <button
+            onClick={() => setIsPointsModalOpen(true)}
+            style={{
+              backgroundColor: '#F3F4F6',
+              color: '#374151',
+              border: '1px solid #D1D5DB',
+              padding: '8px 14px',
+              borderRadius: '20px',
+              fontWeight: '600',
+              cursor: 'pointer',
+              fontSize: '0.85rem'
+            }}
+          >
+            🎁 查积分 / 会员
+          </button>
+
+          <button
+            onClick={() => setIsCartOpen(true)}
+            style={{
+              backgroundColor: '#059669',
+              color: '#ffffff',
+              border: 'none',
+              padding: '8px 16px',
+              borderRadius: '20px',
+              fontWeight: 'bold',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              boxShadow: '0 2px 6px rgba(0,0,0,0.1)'
+            }}
+          >
+            🛒 购物车 ({cart.reduce((sum, item) => sum + item.quantity, 0)})
+          </button>
         </div>
       </nav>
 
-      {/* 2. 沉浸式幻灯片/横幅区 (Hero Slideshow Banner) */}
-      <header style={{ background: 'linear-gradient(135deg, #065F46 0%, #047857 100%)', color: '#ffffff', padding: '60px 20px', textAlign: 'center' }}>
+      {/* 2. Banner 横幅 */}
+      <header style={{ background: 'linear-gradient(135deg, #065F46 0%, #047857 100%)', color: '#ffffff', padding: '50px 20px', textAlign: 'center' }}>
         <div style={{ maxWidth: '800px', margin: '0 auto' }}>
-          <span style={{ backgroundColor: 'rgba(255,255,255,0.2)', padding: '6px 16px', borderRadius: '20px', fontSize: '0.85rem', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '1px' }}>
-            Singapore Same-Day Delivery
-          </span>
-          <h1 style={{ fontSize: '2.5rem', fontWeight: '800', margin: '20px 0 12px 0' }}>
+          <h1 style={{ fontSize: '2.25rem', fontWeight: '800', margin: '0 0 12px 0' }}>
             MILAN FLORIST SG
           </h1>
-          <p style={{ fontSize: '1.15rem', opacity: '0.9', marginBottom: '24px', lineHeight: '1.5' }}>
-            Exquisite Grand Opening Flower Stands & Funeral Condolence Wreaths crafted for every meaningful moment across Singapore.
+          <p style={{ fontSize: '1.1rem', opacity: '0.9', margin: 0 }}>
+            Premium Grand Opening Flower Stands & Funeral Condolence Wreaths. 下单自动累积积分！
           </p>
-          <a 
-            href="https://wa.me/60167297027?text=Hi,%20I%20would%20like%20to%20inquire%20about%20your%20floral%20services." 
-            target="_blank" 
-            rel="noopener noreferrer"
-            style={{ backgroundColor: '#ffffff', color: '#065F46', padding: '12px 28px', borderRadius: '8px', fontWeight: 'bold', textDecoration: 'none', display: 'inline-block', boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }}
-          >
-            💬 WhatsApp 专属客服咨询
-          </a>
         </div>
       </header>
 
-      {/* 3. 商品展示区 (Product Collections) */}
-      <main id="collections" style={{ maxWidth: '1200px', margin: '40px auto', padding: '0 16px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '24px', borderBottom: '1px solid #E5E7EB', paddingBottom: '12px' }}>
-          <div>
-            <h2 style={{ fontSize: '1.75rem', fontWeight: '700', color: '#111827', margin: 0 }}>
-              最新鲜花款 (Our Collections)
-            </h2>
-            <p style={{ fontSize: '0.9rem', color: '#6B7280', margin: '4px 0 0 0' }}>
-              精选高品质鲜花，支持全岛各大殡仪馆、灵堂及开张庆典快速配送。
-            </p>
-          </div>
-        </div>
+      {/* 3. 商品展示区 */}
+      <main style={{ maxWidth: '1200px', margin: '40px auto', padding: '0 16px' }}>
+        <h2 style={{ fontSize: '1.5rem', fontWeight: '700', marginBottom: '24px', borderBottom: '1px solid #E5E7EB', paddingBottom: '8px' }}>
+          Our Collections / 精选花款
+        </h2>
 
-        {/* 商品网格 (Grid) */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 320px))', gap: '24px', justifyContent: 'center' }}>
           {products.map((product: any) => {
             const imageUrl = product.images && product.images[0] ? urlFor(product.images[0]).url() : null;
-            const waNumber = product.whatsappNumber || "60167297027";
-            const waLink = `https://wa.me/${waNumber}?text=Hi,%20I%20would%20like%20to%20inquire%20about%20${encodeURIComponent(product.title)}`;
 
             return (
               <div 
@@ -90,29 +263,20 @@ export default async function Home() {
                   boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
                   display: 'flex',
                   flexDirection: 'column',
-                  justifyContent: 'space-between',
-                  transition: 'transform 0.2s'
+                  justifyContent: 'space-between'
                 }}
               >
                 <div>
-                  {/* 图片容器 */}
-                  <div style={{ width: '100%', height: '260px', overflow: 'hidden', position: 'relative', backgroundColor: '#F3F4F6' }}>
+                  <div style={{ width: '100%', height: '260px', overflow: 'hidden', backgroundColor: '#F3F4F6' }}>
                     {imageUrl ? (
-                      <img
-                        src={imageUrl}
-                        alt={product.title}
-                        style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                      />
+                      <img src={imageUrl} alt={product.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                     ) : (
-                      <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9CA3AF' }}>
-                        暂无图片
-                      </div>
+                      <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9CA3AF' }}>暂无图片</div>
                     )}
                   </div>
 
-                  {/* 商品信息 */}
                   <div style={{ padding: '16px' }}>
-                    <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#DB2777', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#DB2777', textTransform: 'uppercase' }}>
                       {product.category || "Flower Arrangement"}
                     </span>
                     <h3 style={{ fontSize: '1.125rem', fontWeight: 'bold', color: '#111827', marginTop: '4px', marginBottom: '8px' }}>
@@ -129,27 +293,23 @@ export default async function Home() {
                   </div>
                 </div>
 
-                {/* WhatsApp 订购按钮 */}
                 <div style={{ padding: '16px', paddingTop: 0 }}>
-                  <a
-                    href={waLink}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    onClick={() => addToCart(product)}
                     style={{
-                      display: 'block',
                       width: '100%',
-                      textAlign: 'center',
                       backgroundColor: '#059669',
                       color: '#ffffff',
                       fontWeight: 'bold',
-                      padding: '10px 0',
+                      padding: '12px 0',
                       borderRadius: '8px',
-                      textDecoration: 'none',
-                      boxSizing: 'border-box'
+                      border: 'none',
+                      cursor: 'pointer',
+                      fontSize: '0.95rem'
                     }}
                   >
-                    WhatsApp 快速订购
-                  </a>
+                    🛒 加入购物车 (Add to Cart)
+                  </button>
                 </div>
               </div>
             );
@@ -157,47 +317,125 @@ export default async function Home() {
         </div>
       </main>
 
-      {/* 4. 关于我们与服务保障 (About Us Section) */}
-      <section id="about" style={{ backgroundColor: '#ffffff', borderTop: '1px solid #E5E7EB', borderBottom: '1px solid #E5E7EB', padding: '50px 16px', marginTop: '60px' }}>
-        <div style={{ maxWidth: '900px', margin: '0 auto', textAlign: 'center' }}>
-          <h2 style={{ fontSize: '1.75rem', fontWeight: 'bold', marginBottom: '16px' }}>为什么选择 Milan Florist SG？</h2>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '30px', marginTop: '30px', textAlign: 'left' }}>
-            <div style={{ padding: '20px', backgroundColor: '#F9FAFB', borderRadius: '8px' }}>
-              <h3 style={{ fontSize: '1.1rem', fontWeight: 'bold', color: '#059669', marginBottom: '8px' }}>🚚 新加坡全岛配送</h3>
-              <p style={{ fontSize: '0.9rem', color: '#6B7280', margin: 0 }}>专业覆盖新加坡各大殡仪馆、灵堂、商业开张地点及住宅地址，准时送达。</p>
+      {/* 4. 会员积分查询弹窗 */}
+      {isPointsModalOpen && (
+        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 110, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
+          <div style={{ backgroundColor: '#ffffff', borderRadius: '12px', maxWidth: '420px', width: '100%', padding: '24px', boxShadow: '0 10px 25px rgba(0,0,0,0.15)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h3 style={{ fontSize: '1.2rem', fontWeight: 'bold', margin: 0 }}>🎁 查会员积分</h3>
+              <button onClick={() => setIsPointsModalOpen(false)} style={{ background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer' }}>&times;</button>
             </div>
-            <div style={{ padding: '20px', backgroundColor: '#F9FAFB', borderRadius: '8px' }}>
-              <h3 style={{ fontSize: '1.1rem', fontWeight: 'bold', color: '#059669', marginBottom: '8px' }}>✨ 严选优质鲜花</h3>
-              <p style={{ fontSize: '0.9rem', color: '#6B7280', margin: 0 }}>采用高品质新鲜花材，由专业花艺师精心设计，庄重肃穆或喜庆大方兼具。</p>
-            </div>
-            <div style={{ padding: '20px', backgroundColor: '#F9FAFB', borderRadius: '8px' }}>
-              <h3 style={{ fontSize: '1.1rem', fontWeight: 'bold', color: '#059669', marginBottom: '8px' }}>💬 贴心一对一服务</h3>
-              <p style={{ fontSize: '0.9rem', color: '#6B7280', margin: 0 }}>支持定制挽词、贺词及加急订单，通过 WhatsApp 轻松快捷沟通对接。</p>
-            </div>
-          </div>
-        </div>
-      </section>
 
-      {/* 5. 联系我们/页脚 (Contact & Footer) */}
-      <footer id="contact" style={{ backgroundColor: '#111827', color: '#9CA3AF', padding: '40px 16px', textAlign: 'center' }}>
-        <div style={{ maxWidth: '800px', margin: '0 auto' }}>
-          <h2 style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#ffffff', marginBottom: '12px' }}>Contact Us / 联系我们</h2>
-          <p style={{ fontSize: '0.95rem', marginBottom: '20px' }}>
-            如有任何定制需求或紧急订单，欢迎随时通过 WhatsApp 与我们取得联系。
-          </p>
-          <a 
-            href="https://wa.me/60167297027?text=Hi,%20I%20would%20like%20to%20inquire%20about%20Milan%20Florist." 
-            target="_blank" 
-            rel="noopener noreferrer"
-            style={{ display: 'inline-block', backgroundColor: '#059669', color: '#ffffff', padding: '10px 24px', borderRadius: '6px', fontWeight: 'bold', textDecoration: 'none', marginBottom: '30px' }}
-          >
-            立即联系 WhatsApp (+60 16-729 7027)
-          </a>
-          <div style={{ borderTop: '1px solid #374151', paddingTop: '20px', fontSize: '0.85rem' }}>
-            © 2026 Milan Florist SG. All rights reserved.
+            <form onSubmit={handleCheckPoints} style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+              <input 
+                type="text" 
+                required 
+                placeholder="输入您的手机号码..." 
+                value={searchPhone} 
+                onChange={(e) => setSearchPhone(e.target.value)} 
+                style={{ flex: 1, padding: '10px', borderRadius: '6px', border: '1px solid #D1D5DB' }}
+              />
+              <button type="submit" style={{ backgroundColor: '#059669', color: '#ffffff', border: 'none', padding: '10px 16px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>
+                {isSearching ? "查询中..." : "查询"}
+              </button>
+            </form>
+
+            {searchError && (
+              <div style={{ color: '#D97706', fontSize: '0.85rem', backgroundColor: '#FEF3C7', padding: '10px', borderRadius: '6px' }}>
+                {searchError}
+              </div>
+            )}
+
+            {customerData && (
+              <div style={{ backgroundColor: '#ECFDF5', border: '1px solid #A7F3D0', padding: '16px', borderRadius: '8px', marginTop: '12px' }}>
+                <div style={{ fontSize: '1rem', fontWeight: 'bold', color: '#065F46' }}>👋 尊贵会员: {customerData.name}</div>
+                <div style={{ fontSize: '1.5rem', fontWeight: '800', color: '#059669', margin: '8px 0' }}>
+                  {customerData.points} <span style={{ fontSize: '0.9rem', fontWeight: 'normal' }}>积分 (Points)</span>
+                </div>
+                <p style={{ fontSize: '0.8rem', color: '#047857', margin: 0 }}>
+                  💡 每消费 $1 自动累积 1 积分！下次下单直接填写手机号即可自动计分。
+                </p>
+              </div>
+            )}
           </div>
         </div>
-      </footer>
+      )}
+
+      {/* 5. 侧滑购物车 Drawer */}
+      {isCartOpen && (
+        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 100, display: 'flex', justifyContent: 'flex-end' }}>
+          <div style={{ width: '100%', maxWidth: '450px', backgroundColor: '#ffffff', height: '100%', display: 'flex', flexDirection: 'column', boxShadow: '-4px 0 20px rgba(0,0,0,0.15)' }}>
+            
+            <div style={{ padding: '20px', borderBottom: '1px solid #E5E7EB', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ fontSize: '1.25rem', fontWeight: 'bold', margin: 0 }}>🛍️ 您的购物车</h3>
+              <button onClick={() => setIsCartOpen(false)} style={{ background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer' }}>&times;</button>
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto', padding: '20px' }}>
+              {cart.length === 0 ? (
+                <div style={{ textAlign: 'center', color: '#9CA3AF', marginTop: '60px' }}>
+                  购物车是空的，去选购心仪的花束吧！
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  {cart.map((item) => (
+                    <div key={item._id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #F3F4F6', paddingBottom: '12px' }}>
+                      <div>
+                        <div style={{ fontWeight: 'bold', fontSize: '0.95rem' }}>{item.title}</div>
+                        <div style={{ color: '#059669', fontWeight: 'bold', fontSize: '0.85rem' }}>SGD ${item.price}</div>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <button onClick={() => updateQuantity(item._id, -1)} style={{ width: '28px', height: '28px', border: '1px solid #D1D5DB', borderRadius: '4px', cursor: 'pointer', backgroundColor: '#ffffff' }}>-</button>
+                        <span style={{ fontWeight: 'bold', fontSize: '0.9rem' }}>{item.quantity}</span>
+                        <button onClick={() => updateQuantity(item._id, 1)} style={{ width: '28px', height: '28px', border: '1px solid #D1D5DB', borderRadius: '4px', cursor: 'pointer', backgroundColor: '#ffffff' }}>+</button>
+                      </div>
+                    </div>
+                  ))}
+
+                  <form id="checkout-form" onSubmit={handleCheckout} style={{ marginTop: '20px', display: 'flex', flexDirection: 'column', gap: '12px', borderTop: '2px dashed #E5E7EB', paddingTop: '16px' }}>
+                    <h4 style={{ margin: '0 0 4px 0', fontSize: '1rem', fontWeight: 'bold', color: '#111827' }}>填写送货详情 (自动累积积分)：</h4>
+                    
+                    <input type="text" required value={senderName} onChange={(e) => setSenderName(e.target.value)} placeholder="送花人姓名 (Sender Name)*" style={{ padding: '8px 12px', borderRadius: '6px', border: '1px solid #D1D5DB' }} />
+                    <input type="text" required value={recipientName} onChange={(e) => setRecipientName(e.target.value)} placeholder="收花人姓名/灵堂 (Recipient)*" style={{ padding: '8px 12px', borderRadius: '6px', border: '1px solid #D1D5DB' }} />
+                    <input type="text" required value={recipientPhone} onChange={(e) => setRecipientPhone(e.target.value)} placeholder="您的手机号码/积分账号 (Phone)*" style={{ padding: '8px 12px', borderRadius: '6px', border: '1px solid #D1D5DB' }} />
+                    <textarea required rows={2} value={address} onChange={(e) => setAddress(e.target.value)} placeholder="新加坡详细配送地址/灵堂或展馆*" style={{ padding: '8px 12px', borderRadius: '6px', border: '1px solid #D1D5DB', fontFamily: 'sans-serif' }} />
+                    <input type="text" required value={deliveryDate} onChange={(e) => setDeliveryDate(e.target.value)} placeholder="配送日期与时间 (例: 10/20 14:00 前)*" style={{ padding: '8px 12px', borderRadius: '6px', border: '1px solid #D1D5DB' }} />
+                    <textarea rows={2} value={message} onChange={(e) => setMessage(e.target.value)} placeholder="卡片贺词 / 挽词内容" style={{ padding: '8px 12px', borderRadius: '6px', border: '1px solid #D1D5DB', fontFamily: 'sans-serif' }} />
+                  </form>
+                </div>
+              )}
+            </div>
+
+            {cart.length > 0 && (
+              <div style={{ padding: '20px', borderTop: '1px solid #E5E7EB', backgroundColor: '#F9FAFB' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '1.1rem', fontWeight: '800', marginBottom: '16px' }}>
+                  <span>总计 (Total):</span>
+                  <span style={{ color: '#059669' }}>SGD ${totalPrice}</span>
+                </div>
+                <button
+                  type="submit"
+                  form="checkout-form"
+                  disabled={isSubmittingOrder}
+                  style={{
+                    width: '100%',
+                    backgroundColor: '#059669',
+                    color: '#ffffff',
+                    fontWeight: 'bold',
+                    padding: '14px 0',
+                    borderRadius: '8px',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: '1rem'
+                  }}
+                >
+                  {isSubmittingOrder ? "正在为您自动计分..." : "💬 提交订单至 WhatsApp (自动记分)"}
+                </button>
+              </div>
+            )}
+
+          </div>
+        </div>
+      )}
 
     </div>
   );
